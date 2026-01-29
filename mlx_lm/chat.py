@@ -1,6 +1,8 @@
 # Copyright © 2023-2024 Apple Inc.
 
 import argparse
+import os
+from atexit import register
 
 import mlx.core as mx
 
@@ -16,6 +18,40 @@ DEFAULT_XTC_THRESHOLD = 0.0
 DEFAULT_SEED = 0
 DEFAULT_MAX_TOKENS = 256
 DEFAULT_MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit"
+DEFAULT_HISTORY_FILE = os.path.expanduser("~/.mlx_lm_chat_history")
+DEFAULT_HISTORY_SIZE = 1000
+
+
+def setup_readline(history_file: str, history_size: int):
+    """Set up readline with persistent history."""
+    try:
+        from readline import read_history_file, set_history_length, write_history_file
+    except ImportError:
+        print(
+            "[WARNING] readline not available. "
+            "Install pyreadline3 on Windows for history support."
+        )
+        return
+
+    set_history_length(history_size)
+
+    try:
+        if os.path.exists(history_file):
+            read_history_file(history_file)
+    except (IOError, OSError):
+        pass  # History file doesn't exist or can't be read
+
+    register(write_history_file, history_file)
+    print(f"[INFO] Writting into the file : {os.path.abspath(history_file)}")
+
+
+def clear_history(history_file: str):
+    if os.path.exists(history_file):
+        with open(history_file, "w") as f:
+            return
+    print(
+        f"[WARNING] The file ({os.path.abspath(history_file)}) does not exists - not able to clear history"
+    )
 
 
 def setup_arg_parser():
@@ -84,6 +120,28 @@ def setup_arg_parser():
         action="store_true",
         help="Use pipelining instead of tensor parallelism",
     )
+    parser.add_argument(
+        "--no-history",
+        action="store_true",
+        help="Disable persistent command history",
+    )
+    parser.add_argument(
+        "--history-file",
+        type=str,
+        default=DEFAULT_HISTORY_FILE,
+        help=f"Path to the history file (default: {DEFAULT_HISTORY_FILE})",
+    )
+    parser.add_argument(
+        "--history-size",
+        type=int,
+        default=DEFAULT_HISTORY_SIZE,
+        help=f"Maximum number of history entries to save (default: {DEFAULT_HISTORY_SIZE})",
+    )
+    parser.add_argument(
+        "--clear-history",
+        action="store_true",
+        help="Clear the history file",
+    )
     return parser
 
 
@@ -95,6 +153,12 @@ def main():
     rank = group.rank()
     pipeline_group = group if args.pipeline else None
     tensor_group = group if not args.pipeline else None
+
+    if args.clear_history and rank == 0:
+        clear_history(args.history_file)
+
+    if not args.no_history and rank == 0:
+        setup_readline(args.history_file, args.history_size)
 
     def rprint(*args, **kwargs):
         if rank == 0:
@@ -120,6 +184,10 @@ def main():
         rprint("- 'q' to exit")
         rprint("- 'r' to reset the chat")
         rprint("- 'h' to display these commands")
+        rprint()
+        rprint("Line editing:")
+        rprint("- Use arrow keys to move cursor and edit text")
+        rprint("- Up/Down arrows to cycle through history")
 
     rprint(f"[INFO] Starting chat session with {args.model}.")
     print_help()
